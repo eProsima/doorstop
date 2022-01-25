@@ -36,6 +36,13 @@ Additional references:
 
 ## Installation
 
+Install Doorstop from source:
+
+Clone this repo and launch `pip install` inside of main repository folder:
+```sh
+pip install .
+```
+
 Install Doorstop with pip:
 
 ```sh
