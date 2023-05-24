@@ -13,14 +13,16 @@ VIRTUAL_ENV ?= .venv
 # MAIN TASKS ##################################################################
 
 .PHONY: all
-all: install
+all: doctor format check test mkdocs demo ## Run all tasks that determine CI status
 
-.PHONY: ci
-ci: format check test mkdocs demo ## Run all tasks that determine CI status
-
-.PHONY: watch
-watch: install .clean-test ## Continuously run all CI tasks when files chanage
+.PHONY: dev
+dev: install .clean-test ## Continuously run all CI tasks when files chanage
 	poetry run sniffer
+
+.PHONY: dev-install
+dev-install: install
+	poetry build
+	pip install --force dist/doorstop*.whl
 
 .PHONY: run ## Start the program
 run: install
@@ -68,7 +70,7 @@ format: install
 .PHONY: check
 check: install format  ## Run formaters, linters, and static analysis
 ifdef CI
-	git diff --exit-code
+	git diff --exit-code -- '***.py'
 endif
 	poetry run mypy $(PACKAGES) --config-file=.mypy.ini
 	poetry run pylint $(PACKAGES) --rcfile=.pylint.ini
@@ -82,6 +84,9 @@ PYTEST_OPTIONS := --doctest-modules
 ifndef DISABLE_COVERAGE
 PYTEST_OPTIONS += --cov=$(PACKAGE) --cov-report=html --cov-report=term-missing
 endif
+ifdef CI
+PYTEST_OPTIONS += --cov-report=xml
+endif
 
 .PHONY: test
 test: test-all ## Run unit and integration tests
@@ -90,6 +95,7 @@ test: test-all ## Run unit and integration tests
 test-unit: install
 	poetry run pytest $(PACKAGE) $(PYTEST_OPTIONS)
 ifndef DISABLE_COVERAGE
+	@ echo
 	poetry run coveragespace update unit
 endif
 
@@ -100,6 +106,7 @@ test-int: test-all
 test-all: install
 	TEST_INTEGRATION=true poetry run pytest $(PACKAGES) $(PYTEST_OPTIONS)
 ifndef DISABLE_COVERAGE
+	@ echo
 	poetry run coveragespace update overall
 endif
 
@@ -147,17 +154,26 @@ DOORSTOP := poetry run doorstop
 YAML := $(wildcard */*.yml */*/*.yml */*/*/*/*.yml)
 
 .PHONY: reqs
-reqs: doorstop reqs-html reqs-md reqs-txt
+reqs: doorstop reqs-html reqs-latex reqs-md reqs-pdf reqs-txt
 
 .PHONY: reqs-html
 reqs-html: install docs/gen/*.html
 docs/gen/*.html: $(YAML)
 	$(DOORSTOP) publish all docs/gen --html
 
+.PHONY: reqs-latex
+reqs-latex: install docs/gen/*.tex
+docs/gen/*.tex: $(YAML)
+	$(DOORSTOP) publish all docs/gen --latex
+
 .PHONY: reqs-md
 reqs-md: install docs/gen/*.md
 docs/gen/*.md: $(YAML)
 	$(DOORSTOP) publish all docs/gen --markdown
+
+.PHONY: reqs-pdf
+reqs-pdf: reqs-latex
+	cd docs/gen && ./compile.sh
 
 .PHONY: reqs-txt
 reqs-txt: install docs/gen/*.txt
@@ -207,7 +223,7 @@ upload: dist ## Upload the current version to PyPI
 # CLEANUP #####################################################################
 
 .PHONY: clean
-clean: .clean-build .clean-docs .clean-test .clean-install ## Delete all generated and temporary files
+clean: .clean-dev-install .clean-build .clean-docs .clean-test .clean-install ## Delete all generated and temporary files
 
 .PHONY: clean-all
 clean-all: clean
@@ -217,6 +233,10 @@ clean-all: clean
 .clean-install:
 	find $(PACKAGES) -name '__pycache__' | xargs rm -rf
 	rm -rf *.egg-info
+
+.PHONY: .clean-dev-install
+.clean-dev-install:
+	- pip uninstall --yes dist/doorstop*.whl
 
 .PHONY: .clean-test
 .clean-test:
@@ -233,7 +253,7 @@ clean-all: clean
 # HELP ########################################################################
 
 .PHONY: help
-help: all
+help: install
 	@ grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
 .DEFAULT_GOAL := help

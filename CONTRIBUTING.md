@@ -49,12 +49,23 @@ Build the documentation:
 $ make docs
 ```
 
+Local install for external testing:
+
+```sh
+$ make dev-install
+```
+
+Clean everything:
+```sh
+$ make clean
+```
+
 ## Automatic
 
 Keep all of the above tasks running on change:
 
 ```sh
-$ make watch
+$ make dev
 ```
 
 > In order to have OS X notifications, `brew install terminal-notifier`.

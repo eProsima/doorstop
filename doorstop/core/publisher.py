@@ -12,8 +12,15 @@ from bottle import template as bottle_template
 from plantuml_markdown import PlantUMLMarkdownExtension
 
 from doorstop import common, settings
+from doorstop.cli import utilities
 from doorstop.common import DoorstopError
-from doorstop.core import Document
+from doorstop.core.publisher_latex import (
+    _generate_latex_wrapper,
+    _get_compile_path,
+    _lines_latex,
+    _matrix_latex,
+)
+from doorstop.core.template import CSS, HTMLTEMPLATE, INDEX, MATRIX, get_template
 from doorstop.core.types import is_item, is_tree, iter_documents, iter_items
 
 EXTENSIONS = (
@@ -28,10 +35,6 @@ EXTENSIONS = (
         alt="UML Diagram",
     ),
 )
-CSS = os.path.join(os.path.dirname(__file__), "files", "doorstop.css")
-HTMLTEMPLATE = "sidebar"
-INDEX = "index.html"
-MATRIX = "traceability.csv"
 
 log = common.logger(__name__)
 
@@ -70,54 +73,60 @@ def publish(
     ext = ext or os.path.splitext(path)[-1] or ".html"
     check(ext)
     if linkify is None:
-        linkify = is_tree(obj) and ext in [".html", ".md"]
+        linkify = is_tree(obj) and ext in [".html", ".md", ".tex"]
     if index is None:
         index = is_tree(obj) and ext == ".html"
     if matrix is None:
         matrix = is_tree(obj)
 
-    if is_tree(obj):
-        assets_dir = os.path.join(path, Document.ASSETS)  # path is a directory name
-    else:
-        assets_dir = os.path.join(
-            os.path.dirname(path), Document.ASSETS
-        )  # path is a filename
-
-    if os.path.isdir(assets_dir):
-        log.info("Deleting contents of assets directory %s", assets_dir)
-        common.delete_contents(assets_dir)
-    else:
-        os.makedirs(assets_dir)
-
-    # If publish html and then markdown ensure that the html template are still available
-    if not template:
-        template = HTMLTEMPLATE
-    template_assets = os.path.join(os.path.dirname(__file__), "files", "assets")
-    if os.path.isdir(template_assets):
-        log.info("Copying %s to %s", template_assets, assets_dir)
-        common.copy_dir_contents(template_assets, assets_dir)
+    # Process templates.
+    assets_dir, template = get_template(obj, path, ext, template)
 
     # Publish documents
     count = 0
+    if ext == ".tex":
+        compile_files = []
+        compile_path = ""
     for obj2, path2 in iter_documents(obj, path, ext):
         count += 1
+        # Publish wrapper files for LaTeX.
+        if ext == ".tex":
+            log.debug("Generating compile script for LaTeX from %s", path2)
+            if count == 1:
+                compile_path = _get_compile_path(path2)
+            path2, file_to_compile = _generate_latex_wrapper(
+                obj2, path2, assets_dir, template, matrix, count, obj, path
+            )
+            compile_files.append(file_to_compile)
 
         # Publish content to the specified path
         log.info("publishing to {}...".format(path2))
         lines = publish_lines(
             obj2, ext, linkify=linkify, template=template, toc=toc, **kwargs
         )
-        common.write_lines(lines, path2)
+        common.write_lines(lines, path2, end=settings.WRITE_LINESEPERATOR)
         if obj2.copy_assets(assets_dir):
             log.info("Copied assets from %s to %s", obj.assets, assets_dir)
+
+    if ext == ".tex":
+        common.write_lines(
+            compile_files,
+            compile_path,
+            end=settings.WRITE_LINESEPERATOR,
+            executable=True,
+        )
+        msg = "You can now execute the file 'compile.sh' twice in the exported folder to produce the PDFs!"
+        utilities.show(msg, flush=True)
 
     # Create index
     if index and count:
         _index(path, tree=obj if is_tree(obj) else None)
 
     # Create traceability matrix
-    if index and matrix and count:
-        _matrix(path, tree=obj if is_tree(obj) else None)
+    if (index or ext == ".tex") and (matrix and count):
+        _matrix(
+            path, tree=obj if is_tree(obj) else None, ext=ext if ext == ".tex" else None
+        )
 
     # Return the published path
     if count:
@@ -149,7 +158,7 @@ def _index(directory, index=INDEX, extensions=(".html",), tree=None):
         path = os.path.join(directory, index)
         log.info("creating an {}...".format(index))
         lines = _lines_index(sorted(filenames), tree=tree)
-        common.write_lines(lines, path)
+        common.write_lines(lines, path, end=settings.WRITE_LINESEPERATOR)
     else:
         log.warning("no files for {}".format(index))
 
@@ -257,7 +266,10 @@ def _matrix(directory, tree, filename=MATRIX, ext=None):
     if tree:
         log.info("creating an {}...".format(filename))
         content = _matrix_content(tree)
-        common.write_csv(content, path)
+        if ext == ".tex":
+            _matrix_latex(content, path)
+        else:
+            common.write_csv(content, path)
     else:
         log.warning("no data for {}".format(filename))
 
@@ -308,19 +320,20 @@ def _lines_text(obj, indent=8, width=79, **_):
 
     """
     for item in iter_items(obj):
-
         level = _format_level(item.level)
 
         if item.heading:
-
+            text_lines = item.text.splitlines()
+            if item.header:
+                text_lines.insert(0, item.header)
+            text = os.linesep.join(text_lines)
             # Level and Text
             if settings.PUBLISH_HEADING_LEVELS:
-                yield "{lev:<{s}}{t}".format(lev=level, s=indent, t=item.text)
+                yield "{lev:<{s}}{t}".format(lev=level, s=indent, t=text)
             else:
-                yield "{t}".format(t=item.text)
+                yield "{t}".format(t=text)
 
         else:
-
             # Level and UID
             if item.header:
                 yield "{lev:<{s}}{u} {header}".format(
@@ -394,13 +407,15 @@ def _lines_markdown(obj, **kwargs):
 
     """
     linkify = kwargs.get("linkify", False)
+    to_html = kwargs.get("to_html", False)
     for item in iter_items(obj):
-
         heading = "#" * item.depth
         level = _format_level(item.level)
 
         if item.heading:
             text_lines = item.text.splitlines()
+            if item.header:
+                text_lines.insert(0, item.header)
             # Level and Text
             if settings.PUBLISH_HEADING_LEVELS:
                 standard = "{h} {lev} {t}".format(
@@ -414,7 +429,6 @@ def _lines_markdown(obj, **kwargs):
             yield standard + attr_list
             yield from text_lines[1:]
         else:
-
             uid = item.uid
             if settings.ENABLE_HEADERS:
                 if item.header:
@@ -454,7 +468,7 @@ def _lines_markdown(obj, **kwargs):
                     label = "Parent links:"
                 else:
                     label = "Links:"
-                links = _format_md_links(items2, linkify)
+                links = _format_md_links(items2, linkify, to_html=to_html)
                 label_links = _format_md_label_links(label, links, linkify)
                 yield label_links
 
@@ -464,7 +478,7 @@ def _lines_markdown(obj, **kwargs):
                 if items2:
                     yield ""  # break before links
                     label = "Child links:"
-                    links = _format_md_links(items2, linkify)
+                    links = _format_md_links(items2, linkify, to_html=to_html)
                     label_links = _format_md_label_links(label, links, linkify)
                     yield label_links
 
@@ -572,11 +586,14 @@ def _format_md_references(item):
         return "\n".join(ref for ref in text_refs)
 
 
-def _format_md_links(items, linkify):
+def _format_md_links(items, linkify, to_html=False):
     """Format a list of linked items in Markdown."""
     links = []
     for item in items:
-        link = _format_md_item_link(item, linkify=linkify)
+        if to_html:
+            link = _format_html_item_link(item, linkify=linkify)
+        else:
+            link = _format_md_item_link(item, linkify=linkify)
         links.append(link)
     return ", ".join(links)
 
@@ -629,7 +646,10 @@ def _table_of_contents_md(obj, linkify=None):
 
         if item.heading:
             lines = item.text.splitlines()
-            heading = lines[0] if lines else ""
+            if item.header:
+                heading = item.header
+            else:
+                heading = lines[0] if lines else ""
         elif item.header:
             heading = "{h}".format(h=item.header)
         else:
@@ -669,7 +689,7 @@ def _lines_html(
         document = True
     # Generate HTML
 
-    text = "\n".join(_lines_markdown(obj, linkify=linkify))
+    text = "\n".join(_lines_markdown(obj, linkify=linkify, to_html=True))
     body = markdown.markdown(text, extensions=extensions)
 
     if toc:
@@ -697,7 +717,12 @@ def _lines_html(
 
 
 # Mapping from file extension to lines generator
-FORMAT_LINES = {".txt": _lines_text, ".md": _lines_markdown, ".html": _lines_html}
+FORMAT_LINES = {
+    ".txt": _lines_text,
+    ".md": _lines_markdown,
+    ".html": _lines_html,
+    ".tex": _lines_latex,
+}
 
 
 def check(ext):

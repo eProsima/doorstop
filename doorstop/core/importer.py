@@ -208,7 +208,7 @@ def _file_xlsx(path, document, mapping=None):
             data.append(row2)
 
     # Warn about workbooks that may be sized incorrectly
-    if index >= 2 ** 20 - 1:
+    if index >= 2**20 - 1:
         msg = "workbook contains the maximum number of rows"
         warnings.warn(msg, Warning)
 
@@ -234,7 +234,6 @@ def _itemize(header, data, document, mapping=None):
         attrs = {}
         uid = None
         for index, value in enumerate(row):
-
             # Key lookup
             key = str(header[index]).lower().strip() if header[index] else ""
             if not key:
@@ -287,7 +286,6 @@ def _itemize(header, data, document, mapping=None):
 
         # Convert the row to an item
         if uid and uid != settings.PLACEHOLDER:
-
             # Delete the old item
             try:
                 item = document.find_item(uid)

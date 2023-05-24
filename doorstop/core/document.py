@@ -35,6 +35,7 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
     SKIP = ".doorstop.skip"  # indicates this document should be skipped
     ASSETS = "assets"
     INDEX = "index.yml"
+    TEMPLATE = "template"
 
     DEFAULT_PREFIX = Prefix("REQ")
     DEFAULT_SEP = ""
@@ -65,10 +66,14 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
         self._data["sep"] = Document.DEFAULT_SEP
         self._data["digits"] = Document.DEFAULT_DIGITS  # type: ignore
         self._data["parent"] = None  # type: ignore
+        self._data["itemformat"] = kwargs.get("itemformat")  # type: ignore
         self._extended_reviewed: List[str] = []
         self._items: List[Item] = []
         self._itered = False
         self.children: List[Document] = []
+
+        if not self._data["itemformat"]:
+            self._data["itemformat"] = Item.DEFAULT_ITEMFORMAT
 
     def __repr__(self):
         return "Document('{}')".format(self.path)
@@ -92,7 +97,15 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
     @staticmethod
     @add_document
     def new(
-        tree, path, root, prefix, sep=None, digits=None, parent=None, auto=None
+        tree,
+        path,
+        root,
+        prefix,
+        sep=None,
+        digits=None,
+        parent=None,
+        auto=None,
+        itemformat=None,
     ):  # pylint: disable=R0913,C0301
         """Create a new document.
 
@@ -106,6 +119,8 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
         :param digits: number of digits for the new document
         :param parent: parent UID for the new document
         :param auto: automatically save the document
+
+        :param itemformat: file format for storing items
 
         :raises: :class:`~doorstop.common.DoorstopError` if the document
             already exists
@@ -127,7 +142,9 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
         Document._create(config, name="document")
 
         # Initialize the document
-        document = Document(path, root=root, tree=tree, auto=False)
+        document = Document(
+            path, root=root, tree=tree, auto=False, itemformat=itemformat
+        )
         document.prefix = (  # type: ignore
             prefix if prefix is not None else document.prefix
         )
@@ -148,12 +165,13 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
         """Load the YAML file and process input tags."""
         # Read text from file
         text = self._read(yamlfile)
+
         # Parse YAML data from text
         class IncludeLoader(yaml.SafeLoader):
             def include(self, node):
                 container = IncludeLoader.filenames[0]  # type: ignore
                 dirname = os.path.dirname(container)
-                filename = os.path.join(dirname, self.construct_scalar(node))
+                filename = os.path.join(dirname, str(self.construct_scalar(node)))
                 IncludeLoader.filenames.insert(0, filename)  # type: ignore
                 try:
                     with open(filename, "r") as f:
@@ -186,6 +204,8 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
                     self._data[key] = value.strip()
                 elif key == "digits":
                     self._data[key] = int(value)  # type: ignore
+                elif key == "itemformat":
+                    self._data[key] = value.strip()
                 else:
                     msg = "unexpected document setting '{}' in: {}".format(
                         key, self.config
@@ -267,7 +287,13 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
             for filename in filenames:
                 path = os.path.join(dirpath, filename)
                 try:
-                    item = Item(self, path, root=self.root, tree=self.tree)
+                    item = Item(
+                        self,
+                        path,
+                        root=self.root,
+                        tree=self.tree,
+                        itemformat=self.itemformat,
+                    )
                 except DoorstopError:
                     pass  # skip non-item files
                 else:
@@ -292,6 +318,9 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
         """Copy the contents of the assets directory."""
         if not self.assets:
             return
+        # Create folder if it does not exist.
+        if not os.path.isdir(dest):
+            os.makedirs(dest)
         common.copy_dir_contents(self.assets, dest)
 
     # properties #############################################################
@@ -307,6 +336,13 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
         """Get the path to the document's assets if they exist else `None`."""
         assert self.path
         path = os.path.join(self.path, Document.ASSETS)
+        return path if os.path.isdir(path) else None
+
+    @property
+    def template(self):
+        """Get the path to the document's template if they exist else `None`."""
+        assert self.path
+        path = os.path.join(self.path, Document.TEMPLATE)
         return path if os.path.isdir(path) else None
 
     @property  # type: ignore
@@ -379,6 +415,11 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
         self._data["parent"] = str(value) if value else ""
 
     @property
+    def itemformat(self):
+        """Get storage format for item files."""
+        return self._data["itemformat"]
+
+    @property
     def items(self):
         """Get an ordered list of active items in the document."""
         return sorted(i for i in self._iter() if i.active)
@@ -429,7 +470,9 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
             assert self.path
             path = os.path.join(self.path, Document.INDEX)
             log.info("creating {} index...".format(self))
-            common.write_lines(self._lines_index(self.items), path)
+            common.write_lines(
+                self._lines_index(self.items), path, end=settings.WRITE_LINESEPERATOR
+            )
 
     @index.deleter
     def index(self):
@@ -493,10 +536,14 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
         more_defaults = self._load_with_include(defaults) if defaults else None
 
         item = Item.new(self.tree, self, self.path, self.root, uid, level=next_level)
-        if self._attribute_defaults:
-            item.set_attributes(self._attribute_defaults)
+
+        # exclusivity: apply defaults given by command line OR
+        # document based defaults, but not both
         if more_defaults:
             item.set_attributes(more_defaults)
+        elif self._attribute_defaults:
+            item.set_attributes(self._attribute_defaults)
+
         if level and reorder:
             self.reorder(keep=item)
         return item
@@ -615,7 +662,6 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
 
         """
         if isinstance(section, dict):  # a section
-
             # Get the item and subsection
             uid = list(section.keys())[0]
             if uid == "text":
@@ -651,7 +697,6 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
                 Document._reorder_section(subsection, level >> 1, document, list_of_ids)
 
         elif isinstance(section, list):  # a list of sections
-
             # Process each subsection
             for index, subsection in enumerate(section):
                 Document._reorder_section(
@@ -795,13 +840,11 @@ class Document(BaseValidatable, BaseFileObject):  # pylint: disable=R0902
 
         # Check each item
         for item in items:
-
             # Check item
             for issue in chain(
                 hook(item=item, document=self, tree=self.tree),
                 item_validator.get_issues(item, skip=skip),
             ):
-
                 # Prepend the item's UID to yielded exceptions
                 if isinstance(issue, Exception):
                     yield type(issue)("{}: {}".format(item.uid, issue))
