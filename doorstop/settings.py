@@ -46,8 +46,8 @@ STAMP_NEW_LINKS = True  # automatically stamp links upon creation
 
 # Publishing settings
 PUBLISH_CHILD_LINKS = True  # include child links when publishing
-PUBLISH_BODY_LEVELS = True  # include levels on non-header items
-PUBLISH_HEADING_LEVELS = True  # include levels on header items
+PUBLISH_BODY_LEVELS = False  # include levels on non-header items
+PUBLISH_HEADING_LEVELS = False  # include levels on header items
 ENABLE_HEADERS = True  # use headers if defined
 
 # Version control settings
