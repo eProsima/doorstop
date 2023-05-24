@@ -639,7 +639,7 @@ def iter_documents(obj, path, ext):
         # a tree
         log.debug("iterating over tree...")
         for document in obj.documents:
-            path2 = os.path.join(path, document.prefix + ext)
+            path2 = os.path.join(path, f'{document.depth:03d}' + '_' + document.prefix + ext)
             yield document, path2
     else:
         # assume a document-like object
